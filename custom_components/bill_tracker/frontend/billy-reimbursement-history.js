@@ -227,7 +227,12 @@ class BillyReimbursementHistory extends HTMLElement {
         const debtor = String(part.payer_id || '')
         const percentage = Number(part.percentage || 0)
         if (!debtor || debtor === creditor || percentage <= 0) continue
-        const amount = Number(expense.amount || 0) * percentage / 100
+        const share = Number(expense.amount || 0) * percentage / 100
+        // A credit note is paid back by the payer to the other participant.
+        const credit = share < 0
+        const amount = Math.abs(share)
+        const debtorName = part.name || payerNames.get(debtor) || debtor
+        const creditorName = expense.payer || payerNames.get(creditor) || creditor
         rows.push({
           id: `manual-expense:${expense.id}:${debtor}`,
           archive_key: `manual-expense:${expense.id}:${debtor}`,
@@ -236,10 +241,10 @@ class BillyReimbursementHistory extends HTMLElement {
           archive_date: expense.reimbursement_manual_at || '',
           manual_id: expense.id,
           house_id: expense.house_id,
-          from_payer_id: debtor,
-          from_name: part.name || payerNames.get(debtor) || debtor,
-          to_payer_id: creditor,
-          to_name: expense.payer || payerNames.get(creditor) || creditor,
+          from_payer_id: credit ? creditor : debtor,
+          from_name: credit ? creditorName : debtorName,
+          to_payer_id: credit ? debtor : creditor,
+          to_name: credit ? debtorName : creditorName,
           amount,
           item_count: 1,
           note: expense.note || '',

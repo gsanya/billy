@@ -1904,7 +1904,13 @@ class BillTrackerManager(IncomeMixin, AccountMixin):
                 sum(float(item.get("amount", 0.0) or 0.0) for item in selected_items),
                 2,
             )
-            if selected_amount <= 0 or abs(float(amount) - selected_amount) > 0.01:
+            if (
+                selected_amount <= 0
+                or selected_amount > outstanding + 0.01
+                or abs(float(amount) - selected_amount) > 0.01
+            ):
+                # With credits listed as negative lines, a selection could
+                # otherwise exceed the net debt and flip its direction.
                 raise billy_error("settlement_invalid_selection")
         else:
             if abs(float(amount) - outstanding) > 0.01:
@@ -2086,16 +2092,22 @@ class BillTrackerManager(IncomeMixin, AccountMixin):
                     if row.get("kind") and row.get("id")
                 ]
                 if recorded_items:
+                    # Positive lines settle source->target obligations; negative
+                    # lines are credits that offset target->source obligations.
                     by_key = {
-                        (str(row.get("kind") or ""), str(row.get("id") or "")): row
-                        for row in obligations.get(key, [])
+                        direction: {
+                            (str(row.get("kind") or ""), str(row.get("id") or "")): row
+                            for row in obligations.get(direction, [])
+                        }
+                        for direction in (key, (target, source))
                     }
                     for kind, item_id, recorded_amount in recorded_items:
-                        obligation = by_key.get((kind, item_id))
+                        direction = key if recorded_amount >= 0 else (target, source)
+                        obligation = by_key[direction].get((kind, item_id))
                         if obligation is None:
                             continue
                         applied = min(
-                            max(0.0, recorded_amount),
+                            abs(recorded_amount),
                             max(0.0, float(obligation.get("amount", 0.0) or 0.0)),
                         )
                         obligation["amount"] = max(
@@ -2137,8 +2149,16 @@ class BillTrackerManager(IncomeMixin, AccountMixin):
                 )
                 payment = self._preferred_payment(target, value, self.currency)
                 current_key = (from_id, to_id)
+                # Obligations in the opposite direction (for example a credit
+                # note received by the payer) are shown as negative lines, so
+                # the itemized rows add up to the net amount.
+                offset_rows: list[dict[str, Any]] = []
+                for obligation in obligations.get((to_id, from_id), []):
+                    offset = max(0.0, float(obligation.get("amount", 0.0) or 0.0))
+                    if offset > 0.009:
+                        offset_rows.append({**obligation, "amount": -round(offset, 2)})
                 detail_rows: list[dict[str, Any]] = []
-                remaining_value = value
+                remaining_value = value - sum(row["amount"] for row in offset_rows)
                 for obligation in obligations.get(current_key, []):
                     if remaining_value <= 0.009:
                         break
@@ -2155,6 +2175,7 @@ class BillTrackerManager(IncomeMixin, AccountMixin):
                         }
                     )
                     remaining_value -= applied
+                detail_rows.extend(offset_rows)
                 detail_expense_ids = [
                     str(row["id"])
                     for row in detail_rows
@@ -4022,7 +4043,7 @@ class BillTrackerManager(IncomeMixin, AccountMixin):
                     and x.get("kind")
                     and x.get("id")
                     and isfinite(float(x.get("amount", 0.0) or 0.0))
-                    and float(x.get("amount", 0.0) or 0.0) > 0
+                    and float(x.get("amount", 0.0) or 0.0) != 0
                 ],
                 "note": str(raw.get("note", "")).strip(),
                 "created_at": str(raw.get("created_at") or datetime.now().astimezone().isoformat(timespec="seconds")),

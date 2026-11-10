@@ -2097,10 +2097,13 @@ class BillyDashboard extends HTMLElement {
       const totalNode = card.querySelector('#reimbursement-selected-total')
       if (totalNode) totalNode.textContent = this._money(total)
       const confirmButton = card.querySelector('#reimbursement-confirm-selected')
-      if (confirmButton) confirmButton.disabled = rows.length === 0
+      // Credits are negative lines; a selection must still leave money to pay.
+      const payable =
+        rows.length > 0 && total > 0.009 && total <= Number(debt.amount || 0) + 0.009
+      if (confirmButton) confirmButton.disabled = !payable
       const pay = card.querySelector('#reimbursement-pay-selected')
       if (pay) {
-        if (rows.length) {
+        if (payable) {
           pay.href = paymentUrlFor(
             debt.payment_method,
             debt.payment_handle,
@@ -2128,7 +2131,7 @@ class BillyDashboard extends HTMLElement {
       .querySelector('#reimbursement-confirm-selected')
       ?.addEventListener('click', async () => {
         const { rows, total } = refresh()
-        if (!rows.length) return
+        if (!rows.length || total <= 0.009 || total > Number(debt.amount || 0) + 0.009) return
         const proxy = {
           dataset: {
             from: debt.from_payer_id,

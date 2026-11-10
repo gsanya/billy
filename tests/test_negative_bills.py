@@ -133,3 +133,88 @@ def test_parser_accepts_credits_within_range():
     engine._validate_result({"amount": -5000})
     with pytest.raises(ParserError):
         engine._validate_result({"amount": -2_000_000})
+
+
+# --- Settling reimbursements that include credits -------------------------
+
+def owner_like_history(manager):
+    """Normal bills and credit notes, all paid by A and split 50/50 with B."""
+    split = with_payers(manager)
+    ids = {}
+    for month, amount in [(1, 22090), (2, 9885), (3, -39006), (4, 21237), (5, -475)]:
+        ids[amount] = add(manager, month=month, amount=amount, payer_id="a", split=split)["id"]
+    return ids
+
+
+def test_details_list_full_shares_and_credits_adding_up_to_the_net_debt(manager):
+    ids = owner_like_history(manager)
+    [debt] = manager.debts()
+    # B owes A half of (22090 + 9885 + 21237 - 39006 - 475) = 6865.5
+    assert (debt["from_payer_id"], debt["to_payer_id"], debt["amount"]) == ("b", "a", 6865.5)
+    lines = {row["id"]: row["amount"] for row in debt["items"]}
+    assert lines == {
+        ids[22090]: 11045, ids[9885]: 4942.5, ids[21237]: 10618.5,
+        ids[-39006]: -19503, ids[-475]: -237.5,
+    }
+    assert round(sum(lines.values()), 2) == debt["amount"]
+
+
+def test_settling_everything_clears_the_debt_and_marks_credits_done(manager):
+    ids = owner_like_history(manager)
+    run(manager.async_add_settlement(from_payer_id="b", to_payer_id="a", amount=6865.5))
+    assert manager.debts() == []
+    stored = manager.settlements[0]["line_items"]
+    assert {row["id"]: row["amount"] for row in stored}[ids[-39006]] == -19503
+    for expense in manager.expenses:
+        assert manager._expense_reimbursement_state(expense)["status"] == "done"
+    # stored credit lines survive a reload
+    manager._migrate_settlements()
+    assert len(manager.settlements[0]["line_items"]) == 5
+    assert manager.debts() == []
+
+
+def test_partial_settlement_with_selected_lines_keeps_the_rest_consistent(manager):
+    ids = owner_like_history(manager)
+    selection = [{"kind": "expense", "id": ids[9885]}, {"kind": "expense", "id": ids[-475]}]
+    run(manager.async_add_settlement(
+        from_payer_id="b", to_payer_id="a", amount=4942.5 - 237.5, line_items=selection,
+    ))
+    [debt] = manager.debts()
+    assert debt["amount"] == 6865.5 - (4942.5 - 237.5)
+    lines = {row["id"]: row["amount"] for row in debt["items"]}
+    assert lines == {ids[22090]: 11045, ids[21237]: 10618.5, ids[-39006]: -19503}
+    assert round(sum(lines.values()), 2) == debt["amount"]
+    # settle the remainder
+    run(manager.async_add_settlement(from_payer_id="b", to_payer_id="a", amount=debt["amount"]))
+    assert manager.debts() == []
+
+
+def test_a_selection_of_only_credits_is_rejected(manager):
+    ids = owner_like_history(manager)
+    with pytest.raises(ValueError):
+        run(manager.async_add_settlement(
+            from_payer_id="b", to_payer_id="a", amount=19503,
+            line_items=[{"kind": "expense", "id": ids[-39006]}],
+        ))
+    assert manager.settlements == []
+
+
+def test_net_credit_turns_normal_bills_into_negative_lines(manager):
+    split = with_payers(manager)
+    bill = add(manager, amount=100, payer_id="a", split=split)
+    credit = add(manager, amount=-300, payer_id="a", split=split)
+    [debt] = manager.debts()
+    assert (debt["from_payer_id"], debt["to_payer_id"], debt["amount"]) == ("a", "b", 100)
+    assert {row["id"]: row["amount"] for row in debt["items"]} == {credit["id"]: 150, bill["id"]: -50}
+    run(manager.async_add_settlement(from_payer_id="a", to_payer_id="b", amount=100))
+    assert manager.debts() == []
+
+
+def test_a_selection_larger_than_the_net_debt_is_rejected(manager):
+    ids = owner_like_history(manager)
+    with pytest.raises(ValueError):
+        run(manager.async_add_settlement(
+            from_payer_id="b", to_payer_id="a", amount=11045,
+            line_items=[{"kind": "expense", "id": ids[22090]}],
+        ))
+    assert manager.settlements == []
