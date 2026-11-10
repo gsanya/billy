@@ -295,7 +295,9 @@ class ParserEngine:
         raise ParserError(f"Unsupported date '{raw}'")
 
     def _decimal(self, raw: str, locale: str) -> float:
-        text = raw.strip().replace("\u00a0", "").replace(" ", "")
+        text = raw.strip().replace("\u00a0", "").replace(" ", "").replace("\u2212", "-")
+        if text.endswith("-") and not text.startswith("-"):
+            text = "-" + text[:-1]  # trailing minus, e.g. "1234-"
         if locale.lower().startswith(("it", "de", "es", "fr", "pt")):
             if "," in text:
                 text = text.replace(".", "").replace(",", ".")
@@ -312,7 +314,7 @@ class ParserEngine:
         amount = result.get("amount")
         if amount is not None:
             value = float(amount)
-            if value < 0 or value > 1_000_000:
+            if not -1_000_000 <= value <= 1_000_000:
                 raise ParserError("Amount outside the allowed range")
         consumption = result.get("consumption")
         if consumption is not None and float(consumption) < 0:

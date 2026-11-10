@@ -812,7 +812,7 @@ class BillTrackerCard extends HTMLElement {
           )}"></label>
           <label>${this._escape(
             this._t('amount', { currency }),
-          )}<input id="amount" type="number" min="0" step="0.01" inputmode="decimal" required value="${
+          )}<input id="amount" type="number" step="0.01" required value="${
             editing ? this._escape(editing.amount) : ''
           }" placeholder="0,00"></label>
           <label>${this._escape(
@@ -2258,8 +2258,7 @@ class BillTrackerCard extends HTMLElement {
       !paid ||
       !start ||
       !end ||
-      !Number.isFinite(amount) ||
-      amount < 0
+      !Number.isFinite(amount)
     ) {
       this._error = this._t('invalid_data')
       this._render()

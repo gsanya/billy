@@ -486,7 +486,7 @@ class AccountMixin:
                 paid_on and account_id in buckets
                 and opening_dates[account_id] <= paid_on <= end
             ):
-                buckets[account_id]["expenses"] += _cents(row.get("amount", 0))
+                buckets[account_id]["expenses"] += _cents(row.get("amount", 0), signed=True)
         for payment in getattr(self, "recurring_payments", []):
             if payment.get("already_recorded"):
                 continue

@@ -548,7 +548,7 @@ class BillTrackerManager(IncomeMixin, AccountMixin):
     ) -> dict[str, Any]:
         category = self._resolve_category(category_id, category_name)
         self._validate_date(year, month)
-        self._validate_amount(amount)
+        self._validate_amount(amount, allow_negative=True)
         sy, sm, ey, em = self._normalize_period(
             year, month, int(category["interval_months"]),
             period_start_year, period_start_month, period_end_year, period_end_month,
@@ -650,7 +650,7 @@ class BillTrackerManager(IncomeMixin, AccountMixin):
     ) -> dict[str, Any] | None:
         category = self._resolve_category(category_id, category_name)
         self._validate_date(year, month)
-        self._validate_amount(amount)
+        self._validate_amount(amount, allow_negative=True)
         sy, sm, ey, em = self._normalize_period(
             year, month, int(category["interval_months"]),
             period_start_year, period_start_month, period_end_year, period_end_month,
@@ -998,7 +998,8 @@ class BillTrackerManager(IncomeMixin, AccountMixin):
                         [x for x in history if not x.get("exclude_from_estimates", False)]
                     )
                 else:
-                    amount = history[-1]["amount"] if history else 0.0
+                    regular = [x for x in history if float(x.get("amount") or 0) >= 0]
+                    amount = regular[-1]["amount"] if regular else 0.0
                 payer_id = self._resolve_expense_payer(category, None)
                 default_split = self.default_split()
                 if payer_id and not default_split:
@@ -1497,7 +1498,7 @@ class BillTrackerManager(IncomeMixin, AccountMixin):
                 )
 
                 amount = parse_csv_amount(row.get("amount", ""))
-                self._validate_amount(amount)
+                self._validate_amount(amount, allow_negative=True)
 
                 billing = month_tuple(row.get("billing_month"))
                 if billing is None:
@@ -1976,7 +1977,7 @@ class BillTrackerManager(IncomeMixin, AccountMixin):
             if self.payer(creditor) is None:
                 continue
             amount = float(item.get("amount", 0.0) or 0.0)
-            if amount <= 0:
+            if abs(amount) <= 0.009:
                 continue
             item_id = str(item.get("id") or "")
             for part in item.get("split", []):
@@ -1985,9 +1986,12 @@ class BillTrackerManager(IncomeMixin, AccountMixin):
                     continue
                 percentage = float(part.get("percentage", 0.0) or 0.0)
                 share = amount * percentage / 100.0
-                if share <= 0.009:
+                if abs(share) <= 0.009:
                     continue
-                key = (debtor, creditor)
+                # A negative bill (credit note, refund) was received by the
+                # payer, who therefore owes each participant their share.
+                key = (debtor, creditor) if share > 0 else (creditor, debtor)
+                share = abs(share)
                 gross[key] += share
                 if item_id:
                     expense_ids[key].add(item_id)
@@ -3563,7 +3567,8 @@ class BillTrackerManager(IncomeMixin, AccountMixin):
         amounts = []
         for item in history:
             amount = float(item["amount"])
-            if not isfinite(amount):
+            # Credit notes and refunds are one-off corrections, not usage.
+            if not isfinite(amount) or amount < 0:
                 continue
             category = self.category(str(item.get("category_id", "")))
             interval = max(1, int(category.get("interval_months", 1))) if category else 1
@@ -3868,7 +3873,8 @@ class BillTrackerManager(IncomeMixin, AccountMixin):
                 ey, em = paid_year, paid_month
                 changed = True
             amount = float(item.get("amount", 0.0) or 0.0)
-            if not isfinite(amount) or amount < 0:
+            # Negative bills are valid credit notes/refunds; keep them.
+            if not isfinite(amount):
                 changed = True
                 continue
             payer_id = str(item.get("payer_id") or "") or None
@@ -4513,9 +4519,12 @@ class BillTrackerManager(IncomeMixin, AccountMixin):
             raise billy_error("interval_unsupported")
 
     @staticmethod
-    def _validate_amount(amount: float, allow_zero: bool = True) -> None:
+    def _validate_amount(
+        amount: float, allow_zero: bool = True, allow_negative: bool = False
+    ) -> None:
+        """Validate an amount; only bills may be negative (credit notes, refunds)."""
         value = float(amount)
-        if not isfinite(value) or value < 0 or (not allow_zero and value <= 0):
+        if not isfinite(value) or (value < 0 and not allow_negative) or (not allow_zero and value == 0):
             raise billy_error("amount_invalid")
 
     @staticmethod
